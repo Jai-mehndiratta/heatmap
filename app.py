@@ -30,7 +30,7 @@ from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 import db
-from marketlens import DEFAULT_BASE_URL, MarketLensClient
+from marketlens import DEFAULT_BASE_URL, MarketLensClient, fetch_static_snapshot
 
 BASE_DIR = Path(__file__).resolve().parent
 STATIC_DIR = BASE_DIR / "static"
@@ -40,6 +40,11 @@ SOURCE_BASE_URL = os.getenv("MARKETLENS_BASE_URL", DEFAULT_BASE_URL).rstrip("/")
 SOURCE_PROXY = os.getenv("MARKETLENS_PROXY") or None
 SYNC_CONCURRENCY = max(1, int(os.getenv("SYNC_CONCURRENCY", "6")))
 YAHOO_CONCURRENCY = max(1, int(os.getenv("YAHOO_CONCURRENCY", "6")))
+_ON_RENDER = os.getenv("RENDER", "").strip().lower() == "true"
+USE_STATIC_UNIVERSE = os.getenv(
+    "USE_STATIC_UNIVERSE", "1" if _ON_RENDER else "0"
+).strip().lower() in ("1", "true", "yes", "on")
+STATIC_UNIVERSE_PATH = Path(os.getenv("STATIC_UNIVERSE_PATH", str(BASE_DIR / "universe.json")))
 DASHBOARD_PASSWORD = os.getenv("DASHBOARD_PASSWORD", "").strip()
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 
@@ -135,14 +140,7 @@ async def _run_sync() -> None:
         snapshotId=None,
         durationSeconds=None,
     )
-    _append_log("Starting fresh MarketLens sync")
-
-    client = MarketLensClient(
-        base_url=SOURCE_BASE_URL,
-        concurrency=SYNC_CONCURRENCY,
-        proxy=SOURCE_PROXY,
-        yahoo_concurrency=YAHOO_CONCURRENCY,
-    )
+    _append_log("Starting fresh snapshot sync")
 
     async def on_progress(event: dict[str, Any]) -> None:
         event_type = event.get("type")
@@ -154,6 +152,14 @@ async def _run_sync() -> None:
                 message=f"Fetching {total} sectors…",
             )
             _append_log(f"Found {total} sectors")
+        elif event_type == "universe_loaded":
+            total = int(event.get("stocks") or 0)
+            _update_job(
+                phase="universe",
+                progress={"done": 0, "total": 0, "stocks": total},
+                message=str(event.get("message") or "Loaded bundled sector universe"),
+            )
+            _append_log(str(event.get("message") or "Loaded bundled sector universe"))
         elif event_type == "sector_done":
             _update_job(
                 phase="sectors",
@@ -206,9 +212,23 @@ async def _run_sync() -> None:
             _append_log(str(event.get("message") or "MarketLens sync complete"))
 
     try:
-        snapshot = await client.fetch_all(on_progress=on_progress)
+        if USE_STATIC_UNIVERSE:
+            _append_log(f"Using bundled sector universe: {STATIC_UNIVERSE_PATH.name}")
+            snapshot = await fetch_static_snapshot(
+                STATIC_UNIVERSE_PATH,
+                on_progress=on_progress,
+                yahoo_concurrency=YAHOO_CONCURRENCY,
+            )
+        else:
+            client = MarketLensClient(
+                base_url=SOURCE_BASE_URL,
+                concurrency=SYNC_CONCURRENCY,
+                proxy=SOURCE_PROXY,
+                yahoo_concurrency=YAHOO_CONCURRENCY,
+            )
+            snapshot = await client.fetch_all(on_progress=on_progress)
         if not snapshot.get("stocks"):
-            raise RuntimeError("MarketLens returned no stocks")
+            raise RuntimeError("No stocks were returned")
 
         saved = snapshot
         try:

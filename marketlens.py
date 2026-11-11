@@ -20,10 +20,12 @@ is required at the time of writing.
 from __future__ import annotations
 
 import asyncio
+import json
 import math
 import random
 import statistics
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Awaitable, Callable, Iterable
 from urllib.parse import quote
 
@@ -239,6 +241,90 @@ def _build_snapshot(
             "medianChange": _median(changes),
         },
     }
+
+
+async def fetch_static_snapshot(
+    path: str | Path,
+    on_progress: ProgressCallback | None = None,
+    yahoo_concurrency: int = 6,
+) -> dict[str, Any]:
+    """Build a snapshot from the bundled sector universe.
+
+    MarketLens frequently returns HTTP 403 to cloud data-centre IPs (including
+    Render). The repository therefore carries ``universe.json``: the fixed
+    MarketLens ticker/sector mapping. Prices are still refreshed from Yahoo
+    Finance on every sync.
+    """
+    started = datetime.now(timezone.utc)
+    fetched_at = started.isoformat(timespec="seconds")
+    payload = json.loads(Path(path).read_text(encoding="utf-8"))
+    raw_stocks = payload.get("stocks")
+    if not isinstance(raw_stocks, list) or not raw_stocks:
+        raise RuntimeError("The bundled sector universe is empty or invalid")
+
+    generated_at = _text(payload.get("generatedAt")) or fetched_at
+    stocks: list[dict[str, Any]] = []
+    for raw in raw_stocks:
+        if not isinstance(raw, dict):
+            continue
+        sector = _text(raw.get("sector")) or "Unclassified"
+        stock = _normalise_stock(raw, sector, _text(raw.get("lastUpdated")) or generated_at)
+        if stock is not None:
+            stocks.append(stock)
+
+    if not stocks:
+        raise RuntimeError("The bundled sector universe has no valid stocks")
+
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for stock in stocks:
+        grouped.setdefault(stock["sector"], []).append(stock)
+
+    source_sectors = []
+    for name, members in grouped.items():
+        caps = [member["marketCap"] for member in members if member["marketCap"] is not None]
+        source_sectors.append(
+            {
+                "name": name,
+                "stocks": len(members),
+                "marketCap": round(sum(caps), 2) if caps else None,
+                "performance": None,
+            }
+        )
+
+    if on_progress:
+        result = on_progress(
+            {
+                "type": "universe_loaded",
+                "stocks": len(stocks),
+                "sectors": len(source_sectors),
+                "message": f"Loaded bundled sector universe · {len(stocks):,} stocks",
+            }
+        )
+        if asyncio.iscoroutine(result):
+            await result
+
+    price_client = YahooFinanceClient(concurrency=yahoo_concurrency)
+    stocks, price_stats = await price_client.enrich_prices(stocks, on_progress)
+
+    snapshot = _build_snapshot(
+        stocks=stocks,
+        source_sectors=source_sectors,
+        fetched_at=fetched_at,
+        duration_seconds=(datetime.now(timezone.utc) - started).total_seconds(),
+        errors=[],
+        price_stats=price_stats,
+    )
+    if on_progress:
+        result = on_progress(
+            {
+                "type": "complete",
+                "message": f"Collected {snapshot['stats']['stockCount']} stocks",
+                "stocks": snapshot["stats"]["stockCount"],
+            }
+        )
+        if asyncio.iscoroutine(result):
+            await result
+    return snapshot
 
 
 class MarketLensClient:

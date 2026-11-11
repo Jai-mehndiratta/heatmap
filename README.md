@@ -5,11 +5,17 @@
 A single-page dashboard that pulls the MarketLens NSE universe and renders a
 sector heatmap from Yahoo Finance 1-day returns.
 
+Locally, the app can fetch the sector universe live from MarketLens. On Render,
+MarketLens often returns HTTP 403 to cloud IPs, so the app automatically uses
+the bundled **`universe.json`** sector map and refreshes every price from Yahoo
+Finance on each sync. The sector mapping stays fixed; prices stay live.
+
 Click **Run sync** and the app:
 
 1. Reads the MarketLens sector index and fetches every sector's stock list in
-   parallel, with retries.
-2. Keeps MarketLens's **sector mapping fixed** and de-duplicates by ticker.
+   parallel, with retries. On Render, it loads the committed `universe.json`
+   instead, because MarketLens blocks cloud data-centre IPs.
+2. Keeps the sector mapping fixed and de-duplicates by ticker.
 3. Fetches each stock's latest NSE price and previous close from **Yahoo
    Finance** (ticker `.NS`), then computes the 1-day change from those two
    prices. MarketLens prices are not used when Yahoo returns a quote.
@@ -47,6 +53,21 @@ Open <http://localhost:8000> and click **Run sync**.
 
 The snapshot is stored in `./data/marketlens.db` and reloaded automatically on
 the next start.
+
+### Refreshing the bundled sector universe
+
+Render uses `universe.json` for the fixed ticker/sector map. When you want to
+refresh that map from live MarketLens access, run a local sync first, then:
+
+```bash
+python scripts/build_universe.py
+git add universe.json
+git commit -m "Refresh bundled sector universe"
+git push
+```
+
+The local app can also use the bundled map by setting
+`USE_STATIC_UNIVERSE=1` before starting it.
 
 ---
 
@@ -105,6 +126,8 @@ Then set `DATA_DIR=/var/data`.
 | `DATA_DIR` | `./data` | Where `marketlens.db` is written. |
 | `SYNC_CONCURRENCY` | `6` | Parallel sector requests to MarketLens. Lower it if the source rate-limits you. |
 | `YAHOO_CONCURRENCY` | `6` | Parallel price batches to Yahoo Finance. Lower it if Yahoo rate-limits you. |
+| `USE_STATIC_UNIVERSE` | `1` on Render, `0` locally | Use the bundled `universe.json` sector map instead of fetching MarketLens. Automatically enabled when `RENDER=true`. |
+| `STATIC_UNIVERSE_PATH` | `./universe.json` | Path to the bundled sector universe. |
 | `MARKETLENS_BASE_URL` | `https://marketlens.nseindia.com` | Override the upstream base URL. |
 | `MARKETLENS_PROXY` | unset | Optional HTTP/HTTPS proxy for MarketLens requests. Useful if NSE blocks the Render region. |
 | `DASHBOARD_PASSWORD` | unset | Optional password. The UI asks for it and API calls require the `X-Dashboard-Key` header. |
@@ -142,18 +165,17 @@ curl -o nse_snapshot.csv \
 - MarketLens currently exposes about **2,200–2,300 scrips across ~58 sectors**.
   That is the universe this dashboard reports. It is not every NSE-listed
   company (some BE/BZ-series and smaller SME scrips are absent from the source).
+- Render uses the committed `universe.json` sector map because MarketLens
+  returns HTTP 403 from Render's Singapore region. Local runs use live
+  MarketLens unless `USE_STATIC_UNIVERSE=1` is set.
 - Prices and 1-day changes come from **Yahoo Finance** using the `.NS` symbol.
-  MarketLens remains the source of the sector mapping, stock universe and
-  company metadata.
+  The sector mapping and stock universe are kept fixed.
 - Yahoo Finance does not cover a handful of MarketLens tickers. Those use the
   MarketLens price as a fallback, and the UI footnote shows the matched/fallback
   count. This is typically 6 out of ~2,229 tickers.
 - Market caps are adjusted to the Yahoo price using the share count implied by
   MarketLens's market cap and close, so sector weights stay consistent with the
   corrected prices.
-- The source APIs can change or rate-limit without notice. The client retries
-  with backoff and reports partial sector failures rather than discarding good
-  data.
 - Closing prices and changes are whatever Yahoo returns, typically delayed/EOD
   data. This dashboard is a research tool, not investment advice. Respect the
   sources' terms when using the data.
@@ -173,9 +195,11 @@ curl -o nse_snapshot.csv \
 ## Troubleshooting
 
 **`Sync failed … HTTP 403` or an empty result on Render**
-NSE properties sometimes block non-Indian data-centre IPs. Keep the Render
-region at **Singapore**, set `MARKETLENS_PROXY` to an Indian proxy, or self-host
-with an Indian egress IP.
+MarketLens blocks cloud IPs. The app automatically uses the bundled
+`universe.json` on Render, so this should not occur. If you removed that file,
+set `USE_STATIC_UNIVERSE=1` and restore `universe.json`. Alternatively, set
+`MARKETLENS_PROXY` to an Indian proxy if you want live MarketLens sector
+refreshes from Render.
 
 **The first request after a while is slow**
 Render's free plan spins down idle services. The first request has to cold-start
@@ -195,9 +219,12 @@ Only one sync can run at a time. Wait for the current job or refresh the page.
 ```
 .
 ├── app.py              FastAPI app, job state, CSV export, static serving
-├── marketlens.py       MarketLens client, sector mapping, aggregation
+├── marketlens.py       MarketLens client, static universe loader, aggregation
 ├── yahoo.py            Yahoo Finance NSE price and previous-close enrichment
 ├── db.py               SQLite snapshot persistence
+├── universe.json       Fixed MarketLens ticker/sector map used on Render
+├── scripts/
+│   └── build_universe.py  Regenerate universe.json from a local sync
 ├── static/
 │   ├── index.html      Single-page heatmap shell
 │   ├── styles.css      Heatmap, legend, sector panel, responsive styles

@@ -19,6 +19,8 @@ services:
         value: "6"
       - key: YAHOO_CONCURRENCY
         value: "6"
+      - key: USE_STATIC_UNIVERSE
+        value: "1"
     # Persistent disks are available on paid Render plans. To keep snapshots
     # across deploys/restarts, uncomment the disk below, point DATA_DIR at
     # /var/data, and redeploy.
