@@ -24,6 +24,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
+import httpx
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import FileResponse, JSONResponse, Response
@@ -45,6 +46,11 @@ USE_STATIC_UNIVERSE = os.getenv(
     "USE_STATIC_UNIVERSE", "1" if _ON_RENDER else "0"
 ).strip().lower() in ("1", "true", "yes", "on")
 STATIC_UNIVERSE_PATH = Path(os.getenv("STATIC_UNIVERSE_PATH", str(BASE_DIR / "universe.json")))
+KEEP_ALIVE_URL = os.getenv("RENDER_EXTERNAL_URL", "").rstrip("/")
+KEEP_ALIVE_ENABLED = os.getenv(
+    "KEEP_ALIVE_ENABLED", "1" if KEEP_ALIVE_URL else "0"
+).strip().lower() in ("1", "true", "yes", "on")
+KEEP_ALIVE_INTERVAL = max(60, int(os.getenv("KEEP_ALIVE_INTERVAL_SECONDS", "600")))
 DASHBOARD_PASSWORD = os.getenv("DASHBOARD_PASSWORD", "").strip()
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 
@@ -288,6 +294,29 @@ async def _run_sync() -> None:
         logger.exception("MarketLens sync failed")
 
 
+async def _keep_alive_loop() -> None:
+    """Ping our own public URL so a free Render web service stays awake.
+
+    Render's free plan spins a web service down after 15 minutes without
+    inbound traffic. A request to the public onrender.com URL is inbound, so
+    pinging /api/health every 10 minutes keeps the service warm while the
+    process is alive. If the process has already been stopped, it cannot wake
+    itself; an external monitor or a paid instance is needed for that.
+    """
+    await asyncio.sleep(60)
+    async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
+        while True:
+            try:
+                response = await client.get(f"{KEEP_ALIVE_URL}/api/health")
+                if response.status_code == 200:
+                    logger.info("Keep-alive ping OK (%s)", KEEP_ALIVE_URL)
+                else:
+                    logger.warning("Keep-alive ping returned HTTP %s", response.status_code)
+            except Exception as exc:  # noqa: BLE001 - retry next interval
+                logger.warning("Keep-alive ping failed: %s", exc)
+            await asyncio.sleep(KEEP_ALIVE_INTERVAL)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     try:
@@ -299,8 +328,27 @@ async def lifespan(app: FastAPI):
             logger.info("Loaded snapshot %s with %s stocks", state.snapshot.get("id"), count)
     except Exception as exc:  # noqa: BLE001 - app can still sync in memory
         logger.warning("Could not open the local database: %s", exc)
+
+    keep_alive_task = None
+    if KEEP_ALIVE_ENABLED and KEEP_ALIVE_URL:
+        keep_alive_task = asyncio.create_task(_keep_alive_loop())
+        logger.info(
+            "Keep-alive enabled: pinging %s every %ss",
+            KEEP_ALIVE_URL,
+            KEEP_ALIVE_INTERVAL,
+        )
+    else:
+        logger.info("Keep-alive disabled")
+
     logger.info("MarketLens dashboard ready (source: %s)", SOURCE_BASE_URL)
     yield
+
+    if keep_alive_task is not None:
+        keep_alive_task.cancel()
+        try:
+            await keep_alive_task
+        except asyncio.CancelledError:
+            pass
 
 
 app = FastAPI(

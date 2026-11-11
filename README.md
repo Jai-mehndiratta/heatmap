@@ -128,6 +128,8 @@ Then set `DATA_DIR=/var/data`.
 | `YAHOO_CONCURRENCY` | `6` | Parallel price batches to Yahoo Finance. Lower it if Yahoo rate-limits you. |
 | `USE_STATIC_UNIVERSE` | `1` on Render, `0` locally | Use the bundled `universe.json` sector map instead of fetching MarketLens. Automatically enabled when `RENDER=true`. |
 | `STATIC_UNIVERSE_PATH` | `./universe.json` | Path to the bundled sector universe. |
+| `KEEP_ALIVE_ENABLED` | `1` on Render, `0` locally | Ping the service's own public URL to prevent a free Render instance from spinning down. |
+| `KEEP_ALIVE_INTERVAL_SECONDS` | `600` | Keep-alive interval. Keep it below Render's 15-minute idle timeout. |
 | `MARKETLENS_BASE_URL` | `https://marketlens.nseindia.com` | Override the upstream base URL. |
 | `MARKETLENS_PROXY` | unset | Optional HTTP/HTTPS proxy for MarketLens requests. Useful if NSE blocks the Render region. |
 | `DASHBOARD_PASSWORD` | unset | Optional password. The UI asks for it and API calls require the `X-Dashboard-Key` header. |
@@ -136,6 +138,25 @@ Then set `DATA_DIR=/var/data`.
 
 The app reads environment variables directly and does not auto-load `.env`
 files. `.env.example` is included for reference.
+
+### Keeping the free Render instance awake
+
+On Render, `RENDER_EXTERNAL_URL` is set automatically, so the app starts an
+internal keep-alive task. It requests `GET /api/health` on its own public URL
+60 seconds after startup and then every 10 minutes. Render sees this as inbound
+traffic, which prevents the free instance from hitting its 15-minute idle
+timeout.
+
+Caveats:
+
+- The task only runs while the app is alive. It can keep a warm service warm,
+  but it cannot wake an instance that is already asleep.
+- Render's free workspace includes 750 instance-hours per month. Keeping one
+  service awake 24/7 uses roughly 730 of those hours, leaving little for other
+  free services in the same workspace.
+- If you need guaranteed zero cold starts, use Render's paid Starter plan or an
+  external uptime monitor (for example UptimeRobot) instead of the free plan.
+- You can disable the internal task with `KEEP_ALIVE_ENABLED=0`.
 
 ---
 
@@ -202,8 +223,10 @@ set `USE_STATIC_UNIVERSE=1` and restore `universe.json`. Alternatively, set
 refreshes from Render.
 
 **The first request after a while is slow**
-Render's free plan spins down idle services. The first request has to cold-start
-the container; subsequent requests are fast.
+If the built-in keep-alive is disabled or the service was already asleep,
+Render's free plan has to cold-start the container. The first request will be
+slow; subsequent requests are fast. Use the keep-alive or a paid plan if this
+matters.
 
 **Snapshots disappear after a redeploy**
 Expected on an ephemeral Render filesystem. Attach a persistent disk and set
