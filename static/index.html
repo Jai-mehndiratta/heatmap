@@ -7,7 +7,7 @@
   <meta name="description" content="NSE sector heatmap built from MarketLens 1-day returns.">
   <title>NSE Sector Heatmap</title>
   <link rel="icon" href="/favicon.svg" type="image/svg+xml">
-  <link rel="stylesheet" href="/static/styles.css?v=minimal4">
+  <link rel="stylesheet" href="/static/styles.css?v=minimal5">
 </head>
 <body>
   <header class="topbar">
@@ -88,6 +88,16 @@
           <span class="move-pill" id="sectorMove">—</span>
         </div>
         <p class="panel-meta" id="sectorMeta">—</p>
+        <div class="panel-sort-row">
+          <label class="sort-control">
+            <span>Sort by</span>
+            <select id="companySort" aria-label="Sort companies">
+              <option value="pchange" selected>Percentage change</option>
+              <option value="marketCap">Market cap</option>
+              <option value="closePrice">Share price</option>
+            </select>
+          </label>
+        </div>
       </div>
       <button class="icon-btn" id="closeSector" type="button" aria-label="Close sector detail">×</button>
     </header>
@@ -108,6 +118,6 @@
     </form>
   </div>
 
-  <script src="/static/app.js?v=minimal4" defer></script>
+  <script src="/static/app.js?v=minimal5" defer></script>
 </body>
 </html>

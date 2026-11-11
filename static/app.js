@@ -17,6 +17,7 @@
     pollTimer: null,
     pollFailures: 0,
     sectorName: null,
+    companySort: "pchange",
     authKey: sessionStorage.getItem("ml_dashboard_key") || "",
   };
 
@@ -348,11 +349,14 @@
     const sector = state.sectors.find((item) => item.name === name);
     if (!sector) return;
 
+    const sortKey = ["pchange", "marketCap", "closePrice"].includes(state.companySort)
+      ? state.companySort
+      : "pchange";
     const rows = state.stocks
       .filter((stock) => stock.sector === name)
       .sort((a, b) => {
-        const av = Number(a.pchange);
-        const bv = Number(b.pchange);
+        const av = Number(a[sortKey]);
+        const bv = Number(b[sortKey]);
         const aValid = Number.isFinite(av);
         const bValid = Number.isFinite(bv);
         if (!aValid && !bValid) return 0;
@@ -370,6 +374,7 @@
     movePill.className = `move-pill ${moveClass(move)}`;
 
     $("#sectorMeta").innerHTML = `<strong>${intFmt.format(rows.length)}</strong> companies · <strong>${fmtCapDelta(sectorCapChange(name))}</strong> market-cap change`;
+    $("#companySort").value = sortKey;
 
     const body = $("#sectorBody");
     if (!rows.length) {
@@ -381,13 +386,14 @@
       `;
     } else {
       body.innerHTML = `
-        <div class="list-head"><span>Company</span><span>Close</span><span>1D</span></div>
+        <div class="list-head"><span>Company</span><span>Mkt cap</span><span>Close</span><span>1D</span></div>
         ${rows.map((stock) => `
           <div class="stock-row">
             <div class="stock-name">
               <strong>${esc(stock.ticker)}</strong>
               <span>${esc(stock.name)}</span>
             </div>
+            <div class="stock-cap">${fmtCap(stock.marketCap)}</div>
             <div class="stock-price">${fmtPrice(stock.closePrice)}</div>
             <div class="stock-change ${moveClass(stock.pchange)}">${fmtMove(stock.pchange)}</div>
           </div>
@@ -395,7 +401,7 @@
       `;
     }
 
-    $("#sectorFoot").textContent = "All companies in the sector are listed, sorted by 1-day change (highest to lowest).";
+    $("#sectorFoot").textContent = `All ${intFmt.format(rows.length)} companies in the sector are listed. Sorted by ${sortKey === "pchange" ? "percentage change" : sortKey === "marketCap" ? "market cap" : "share price"}, highest to lowest.`;
 
     body.scrollTop = 0;
     $("#sectorPanel").classList.add("open");
@@ -543,6 +549,10 @@
 
     $("#sectorBackdrop").addEventListener("click", closeSector);
     $("#sortMode").addEventListener("change", renderHeatmap);
+    $("#companySort").addEventListener("change", (event) => {
+      state.companySort = event.target.value;
+      if (state.sectorName) openSector(state.sectorName);
+    });
     $("#authForm").addEventListener("submit", handleAuthSubmit);
 
     document.addEventListener("keydown", (event) => {
